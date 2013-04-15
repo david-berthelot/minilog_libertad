@@ -1,0 +1,164 @@
+%{
+// .LIB reader
+// Author: David Berthelot
+//-----------------------------------------------------------------------------
+// Notes:
+// - Had to remove SEMICOLON constraint to account for the original grammar imperfections
+//-----------------------------------------------------------------------------
+// Todo:
+// - Support clean error reporting
+//-----------------------------------------------------------------------------
+
+#include <stdio.h>
+#include <malloc.h>
+#include <assert.h>
+#include <list>
+#include "LexemeTable.hxx"
+#include "libobjects.hxx"
+
+using namespace std;
+#define YYDEBUG 1
+#define YYPRINTF printf
+
+extern DLIB::Group *toplib;
+extern int yylex();
+extern int DLIB_line;
+void yyerror(const char *s) {
+    printf("LIB-001:%d: %s\n",DLIB_line,s);
+}
+%}
+
+%union {
+    bool                    b_none;
+    const char             *c_lexeme;
+    float                   f_number;
+    DLIB::Group            *p_group;
+    DLIB::Attr             *p_attr;
+    DLIB::Object           *p_group_item;
+    list<DLIB::Object*>    *l_group_items;
+    DLIB::Arg              *p_arg;
+    DLIB::ArgList          *l_args;
+    DLIB::Expr             *p_expr;
+    DLIB::Expr::T_Type      e_expr_type;
+}
+
+%start LIBRARY_FILE
+%token <b_none> K_COLON
+%token <b_none> K_SEMICOLON
+%token <b_none> K_COMMA
+%token <b_none> K_OPEN_SQUARE
+%token <b_none> K_CLOSE_SQUARE
+%token <b_none> K_OPEN_PAREN
+%token <b_none> K_CLOSE_PAREN
+%token <b_none> K_OPEN_BRACE
+%token <b_none> K_CLOSE_BRACE
+%token <b_none> K_PLUS
+%token <b_none> K_MINUS
+%token <b_none> K_MULT
+%token <b_none> K_DIV
+%token <b_none> K_EQUAL
+%token <b_none> K_OR
+%token <b_none> K_XOR
+%token <b_none> K_AND
+%token <b_none> K_NOT
+%token <b_none> K_POST_NOT
+%token <c_lexeme> W_ID W_STRING_LITERAL W_NUMBER
+%token <f_number> F_NUMBER 
+
+/* New declarations */
+%type  <i_none>    LIBRARY_FILE
+%type  <p_arg>     argument simple_argument
+%type  <l_args>    arglist signature
+%type  <p_group>   group
+%type  <p_attr>    attr 
+%type  <l_group_items> group_list group_list_or_null
+%type  <p_group_item>  group_item
+%type  <p_expr>        simple_expr
+%type  <e_expr_type>   operator
+%type  <p_arg>     bool_expr
+%type  <p_expr>    prio1_expr prio2_expr prio3_expr prio4_expr
+%%
+
+LIBRARY_FILE:      group {toplib = $1;}
+;
+
+group_list_or_null: group_list               {$$ = $1;}
+|                                            {$$ = new list<DLIB::Object*>();}
+;
+
+group_list: group_list group_item            {$$ = $1;                        $$->push_back($2);}
+|           group_item                       {$$ = new list<DLIB::Object*>(); $$->push_back($1);}
+;
+
+group_item: group                     {$$ = $1;}
+|           attr                      {$$ = $1;}
+|           attr          K_SEMICOLON {$$ = $1;}
+;
+
+group: W_ID K_OPEN_PAREN signature K_CLOSE_PAREN K_OPEN_BRACE group_list_or_null K_CLOSE_BRACE {$$ = new DLIB::Group($1,$3,$6);}
+;
+
+attr:  W_ID K_COLON W_STRING_LITERAL                         {$$ = new DLIB::Attr($1,$3,DLIB::Attr::T_TEXT);}
+|      W_ID K_COLON F_NUMBER                                 {$$ = new DLIB::Attr($1,$3);}
+|      W_ID K_COLON simple_expr                              {$$ = new DLIB::Attr($1,$3);}
+|      W_ID K_OPEN_PAREN signature K_CLOSE_PAREN             {$$ = new DLIB::Attr($1,$3);}
+|      W_ID K_COLON W_ID K_OPEN_SQUARE F_NUMBER K_COLON F_NUMBER K_CLOSE_SQUARE {$$ = new DLIB::Attr($1,new DLIB::BitExpr($3,int($5),int($7)));}
+|      W_ID K_COLON prio4_expr                               {if (($3->get_type() == DLIB::Expr::T_BUF) && 
+                                                                  ($3->get_first_arg()->get_type() == DLIB::Arg::T_KEYWORD)) {
+                                                                  $$ = new DLIB::Attr($1,$3->get_first_arg()->get_keyword(),DLIB::Attr::T_KEYWORD);
+                                                              } else {
+                                                                  $$ = new DLIB::Attr($1,$3);
+                                                             }}
+;
+
+signature: arglist {$$ = $1;}
+|                  {$$ = 0;}
+;
+
+arglist: arglist K_COMMA argument {$$ = $1;                  $$->push_back($3);}
+|        arglist W_STRING_LITERAL {$$ = $1; $$->push_back(new DLIB::Arg($2,DLIB::Arg::T_TEXT)); printf("LIB-003:%d: Warning missing comma\n",DLIB_line);}
+|        argument                 {$$ = new DLIB::ArgList(); $$->push_back($1);}
+;
+
+simple_argument: W_ID             {$$ = new DLIB::Arg($1,DLIB::Arg::T_KEYWORD);}
+|                F_NUMBER         {$$ = new DLIB::Arg($1);}
+;
+
+argument: simple_argument  {$$ = $1;}
+|         W_STRING_LITERAL {$$ = new DLIB::Arg($1,DLIB::Arg::T_TEXT);}
+|         W_ID K_OPEN_SQUARE F_NUMBER K_CLOSE_SQUARE {$$ = new DLIB::Arg(new DLIB::BitExpr($1,int($3)));}
+|         W_ID K_OPEN_SQUARE F_NUMBER K_COLON F_NUMBER K_CLOSE_SQUARE {$$ = new DLIB::Arg(new DLIB::BitExpr($1,int($3),int($5)));}
+;
+
+operator: K_PLUS           {$$ = DLIB::Expr::T_PLUS;}
+|         K_MINUS          {$$ = DLIB::Expr::T_MINUS;}
+|         K_MULT           {$$ = DLIB::Expr::T_MULT;}
+|         K_DIV            {$$ = DLIB::Expr::T_DIV;}
+;
+
+simple_expr: simple_expr     operator simple_argument   {$$ = new DLIB::Expr($1,$2,$3);}
+|            simple_argument operator simple_argument   {$$ = new DLIB::Expr($1,$2,$3);}
+;
+bool_expr:  W_ID                                        {$$ = new DLIB::Arg($1,DLIB::Arg::T_KEYWORD);}
+|           W_ID K_OPEN_SQUARE F_NUMBER K_CLOSE_SQUARE  {$$ = new DLIB::Arg(new DLIB::BitExpr($1,$3));}
+|           W_NUMBER                                    {$$ = new DLIB::Arg($1,DLIB::Arg::T_TEXT);}
+// |           F_NUMBER                                    {$$ = new DLIB::Arg($1 ? "1" : "0",DLIB::Arg::T_TEXT);assert($1 == 0 || $1 == 1);}
+;
+prio1_expr: K_NOT bool_expr                             {$$ = new DLIB::Expr($2,DLIB::Expr::T_NOT,static_cast<DLIB::Arg*>(0));}
+|           bool_expr K_POST_NOT                        {$$ = new DLIB::Expr($1,DLIB::Expr::T_NOT,static_cast<DLIB::Arg*>(0));}
+|           bool_expr                                   {$$ = new DLIB::Expr($1,DLIB::Expr::T_BUF,static_cast<DLIB::Arg*>(0));}
+|           K_NOT K_OPEN_PAREN prio4_expr K_CLOSE_PAREN       {$$ = new DLIB::Expr($3,DLIB::Expr::T_NOT,static_cast<DLIB::Arg*>(0));}
+|           K_OPEN_PAREN prio4_expr K_CLOSE_PAREN K_POST_NOT  {$$ = new DLIB::Expr($2,DLIB::Expr::T_NOT,static_cast<DLIB::Arg*>(0));}
+|           K_OPEN_PAREN prio4_expr K_CLOSE_PAREN             {$$ = $2;}
+;
+prio2_expr: prio2_expr K_AND prio1_expr                 {$$ = new DLIB::Expr($1,DLIB::Expr::T_AND,$3);}
+//|           prio2_expr prio1_expr                       {$$ = new DLIB::Expr($1,DLIB::Expr::T_AND,$2);}
+|           prio1_expr                                  {$$ = $1;}
+;
+prio3_expr: prio3_expr K_OR prio2_expr                  {$$ = new DLIB::Expr($1,DLIB::Expr::T_OR,$3);}
+|           prio2_expr                                  {$$ = $1;}
+;
+prio4_expr: prio4_expr K_XOR prio3_expr                 {$$ = new DLIB::Expr($1,DLIB::Expr::T_XOR,$3);}
+|           prio4_expr K_EQUAL prio3_expr               {$$ = new DLIB::Expr($1,DLIB::Expr::T_XOR,$3);}
+|           prio3_expr                                  {$$ = $1;}
+;

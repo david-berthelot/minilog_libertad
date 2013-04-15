@@ -1,0 +1,76 @@
+%{
+// .LIB expression parser
+// Author: David Berthelot
+
+#include <stdio.h>
+#include <malloc.h>
+#include <assert.h>
+#include <list>
+#include "LexemeTable.hxx"
+#include "libobjects.hxx"
+
+using namespace std;
+#define YYDEBUG 1
+#define YYPRINTF printf
+
+extern DLIB::Expr *DLIB_Parsed_expr;
+extern int yylex();
+extern int DLIB_line;
+void yyerror(const char *s) {
+    printf("LIB-001:0: %s\n",s);
+}
+%}
+
+%union {
+    bool                    b_none;
+    const char             *c_lexeme;
+    int                     i_number;
+    DLIB::Expr             *p_expr;
+    DLIB::Arg              *p_arg;
+}
+
+%start EXPRESSION_START
+%token <b_none> K_OPEN_SQUARE
+%token <b_none> K_CLOSE_SQUARE
+%token <b_none> K_OPEN_PAREN
+%token <b_none> K_CLOSE_PAREN
+%token <b_none> K_EQUAL
+%token <b_none> K_OR
+%token <b_none> K_XOR
+%token <b_none> K_AND
+%token <b_none> K_NOT
+%token <b_none> K_POST_NOT
+%token <c_lexeme> W_ID W_NUMBER
+%token <i_number> I_NUMBER 
+
+/* New declarations */
+%type  <i_none>    EXPRESSION_START
+%type  <p_arg>     simple_expr
+%type  <p_expr>    prio1_expr prio2_expr prio3_expr prio4_expr
+%%
+
+EXPRESSION_START: prio4_expr                            {DLIB_Parsed_expr = $1;}
+;
+simple_expr: W_ID                                       {$$ = new DLIB::Arg($1,DLIB::Arg::T_KEYWORD);}
+|            W_ID K_OPEN_SQUARE I_NUMBER K_CLOSE_SQUARE {$$ = new DLIB::Arg(new DLIB::BitExpr($1,$3));}
+|            W_NUMBER                                   {$$ = new DLIB::Arg($1,DLIB::Arg::T_TEXT);}
+|            I_NUMBER                                   {$$ = new DLIB::Arg($1 ? "1" : "0",DLIB::Arg::T_TEXT);assert($1 == 0 || $1 == 1);}
+;
+prio1_expr: K_NOT simple_expr                           {$$ = new DLIB::Expr($2,DLIB::Expr::T_NOT,static_cast<DLIB::Arg*>(0));}
+|           simple_expr K_POST_NOT                      {$$ = new DLIB::Expr($1,DLIB::Expr::T_NOT,static_cast<DLIB::Arg*>(0));}
+|           simple_expr                                 {$$ = new DLIB::Expr($1,DLIB::Expr::T_BUF,static_cast<DLIB::Arg*>(0));}
+|           K_NOT K_OPEN_PAREN prio4_expr K_CLOSE_PAREN       {$$ = new DLIB::Expr($3,DLIB::Expr::T_NOT,static_cast<DLIB::Arg*>(0));}
+|           K_OPEN_PAREN prio4_expr K_CLOSE_PAREN K_POST_NOT  {$$ = new DLIB::Expr($2,DLIB::Expr::T_NOT,static_cast<DLIB::Arg*>(0));}
+|           K_OPEN_PAREN prio4_expr K_CLOSE_PAREN             {$$ = $2;}
+;
+prio2_expr: prio2_expr K_AND prio1_expr                 {$$ = new DLIB::Expr($1,DLIB::Expr::T_AND,$3);}
+|           prio2_expr prio1_expr                       {$$ = new DLIB::Expr($1,DLIB::Expr::T_AND,$2);}
+|           prio1_expr                                  {$$ = $1;}
+;
+prio3_expr: prio3_expr K_OR prio2_expr                  {$$ = new DLIB::Expr($1,DLIB::Expr::T_OR,$3);}
+|           prio2_expr                                  {$$ = $1;}
+;
+prio4_expr: prio4_expr K_XOR prio3_expr                 {$$ = new DLIB::Expr($1,DLIB::Expr::T_XOR,$3);}
+|           prio4_expr K_EQUAL prio3_expr               {$$ = new DLIB::Expr($1,DLIB::Expr::T_XOR,$3);}
+|           prio3_expr                                  {$$ = $1;}
+;

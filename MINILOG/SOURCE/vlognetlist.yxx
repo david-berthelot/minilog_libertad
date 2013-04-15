@@ -1,0 +1,214 @@
+%{
+// Verilog netlist reader
+// Author: David Berthelot
+
+#include <stdio.h>
+#include <malloc.h>
+#include <assert.h>
+#include "LexemeTable.hxx"
+#include "vlogobjects.hxx"
+
+#define YYDEBUG 1
+#define YYPRINTF printf
+
+extern VLP::Design *topdesign;
+extern int yylex();
+extern int VLP_line;
+void yyerror(const char *c) {
+    printf("VLP-001: Line %d %s\n",VLP_line,c);
+}
+%}
+
+%union {
+    bool                    i_none;
+    unsigned int            i_keyword;
+    unsigned int            i_int;
+    const char             *i_lexeme;
+    VLP::Range             *i_range;
+    VLP::NameList          *i_names;
+    VLP::Object            *i_object;
+    VLP::ObjectList        *i_objects;
+    VLP::Expr              *i_expr;
+    VLP::ExprList          *l_exprs;
+    VLP::InstInterface     *i_iinterface;
+    VLP::InstInterfaceList *i_iinterfaces;
+    VLP::Module            *i_module;
+    VLP::Wire              *p_wire;
+    VLP::Wire::T_Wire       t_wire;
+}
+
+%start DESIGN
+%token <i_keyword> KW_MODULE KW_ENDMODULE
+%token <i_keyword> KW_INPUT KW_INOUT KW_OUTPUT
+%token <i_keyword> KW_SUPPLY0 KW_SUPPLY1
+%token <i_keyword> KW_TRI0 KW_TRI1
+%token <i_keyword> KW_WIRE KW_WAND KW_WOR
+%token <i_keyword> KW_TRI KW_TRIAND KW_TRIOR 
+%token <i_lexeme>  KW_AND KW_NAND KW_OR KW_NOR KW_XOR KW_XNOR KW_NOT
+%token <i_keyword> KW_ASSIGN
+%token <i_keyword> ASSIGN
+%token <i_keyword> QUOTE
+%token <i_keyword> COLON
+%token <i_keyword> SEMICOLON
+%token <i_keyword> COMMA
+%token <i_keyword> OPEN_PAREN
+%token <i_keyword> CLOSE_PAREN
+%token <i_keyword> OPEN_BRACE
+%token <i_keyword> CLOSE_BRACE
+%token <i_keyword> OPEN_SQUARE
+%token <i_keyword> CLOSE_SQUARE
+%token <i_keyword> DOT
+%token <i_lexeme>  ID CONSTANT
+%token <i_int>     INT
+
+/* New declarations */
+%type  <i_none>    DESIGN module_list
+%type  <i_lexeme>  modelid
+%type  <i_module>  module
+%type  <i_names>   id_list interface
+%type  <i_objects> body statement_list ldecl decl_list interface2001 decl_list_comma
+%type  <i_object>  statement stmt_assign stmt_inst
+%type  <i_range>   range
+%type  <i_expr>    wire_expr
+%type  <i_iinterface>  intf_expr
+%type  <i_iinterfaces> intf_expr_list
+%type  <t_wire>    wire_type_uv port_type v_type uv_type
+%type  <p_wire>    decl_port
+%type  <l_exprs>   list_wire_expr conc_expr
+%%
+
+DESIGN:      module_list
+;
+
+module_list: module_list module {topdesign->add_module($2);}
+|            module             {topdesign->add_module($1);}
+;
+
+module: KW_MODULE ID interface     SEMICOLON body KW_ENDMODULE {$$ = new VLP::Module($2,$3); $$->add_objects($5);}
+|       KW_MODULE ID interface2001 SEMICOLON body KW_ENDMODULE {$$ = new VLP::Module($2,new VLP::NameList()); 
+                                                                $$->add_objects($3); $$->add_objects($5);}
+;
+
+interface: OPEN_PAREN id_list CLOSE_PAREN {$$ = $2;}
+|          OPEN_PAREN         CLOSE_PAREN {$$ = new VLP::NameList();}
+;
+
+interface2001: OPEN_PAREN decl_list_comma CLOSE_PAREN {$$ = $2;}
+;
+
+id_list: id_list COMMA ID {$$ = $1;                  $$->push_back($3);}
+|        ID               {$$ = new VLP::NameList(); $$->push_back($1);}
+;
+
+body: decl_list statement_list      {$$ = $1; copy($2->begin(),$2->end(),back_inserter(*$$)); delete $2;}
+|     decl_list                     {$$ = $1;}
+|     statement_list                {$$ = $1;}
+|                                   {$$ = new VLP::ObjectList();}
+;
+
+decl_list: decl_list ldecl SEMICOLON {$$ = $1; copy($2->begin(),$2->end(),back_inserter(*$$)); delete $2;}
+|          decl_list error SEMICOLON {$$ = $1;}
+|          ldecl SEMICOLON           {$$ = $1;}
+|          error SEMICOLON           {$$ = new VLP::ObjectList();}
+;
+
+decl_list_comma: decl_list_comma COMMA decl_port    {$$ = $1;                    $$->push_back($3);}
+|                decl_port                          {$$ = new VLP::ObjectList(); $$->push_back($1);}
+;
+
+port_type: KW_INPUT  {$$ = VLP::Wire::W_IN;}
+|          KW_INOUT  {$$ = VLP::Wire::W_INOUT;}
+|          KW_OUTPUT {$$ = VLP::Wire::W_OUT;}
+;
+
+decl_port: port_type       ID {$$ = new VLP::Wire($2,$1);}
+|          port_type range ID {$$ = new VLP::Wire($3,$1,$2);}
+;
+
+wire_type_uv: KW_WIRE    {$$ = VLP::Wire::W_WIRE;}
+|             KW_WAND    {$$ = VLP::Wire::W_WAND;}
+|             KW_WOR     {$$ = VLP::Wire::W_WOR;}
+|             KW_SUPPLY0 {$$ = VLP::Wire::W_SUPPLY0;}
+|             KW_SUPPLY1 {$$ = VLP::Wire::W_SUPPLY1;}
+|             KW_TRI     {$$ = VLP::Wire::W_TRI;}
+|             KW_TRIAND  {$$ = VLP::Wire::W_TRIAND;}
+|             KW_TRIOR   {$$ = VLP::Wire::W_TRIOR;}
+|             KW_TRI0    {$$ = VLP::Wire::W_TRI0;}
+|             KW_TRI1    {$$ = VLP::Wire::W_TRI1;}
+;
+
+v_type: port_type {$$ = $1;}
+|       KW_WIRE   {$$ = VLP::Wire::W_WIRE;}
+|       KW_WAND   {$$ = VLP::Wire::W_WAND;}
+|       KW_WOR    {$$ = VLP::Wire::W_WOR;}
+|       KW_TRI    {$$ = VLP::Wire::W_TRI;}
+|       KW_TRIAND {$$ = VLP::Wire::W_TRIAND;}
+|       KW_TRIOR  {$$ = VLP::Wire::W_TRIOR;}
+;
+
+uv_type: port_type    {$$ = $1;}
+|        wire_type_uv {$$ = $1;}
+;
+
+ldecl: uv_type       id_list {$$ = new VLP::ObjectList(); 
+                              for(VLP::NameList::const_iterator x=$2->begin(); x!=$2->end(); ++x) 
+                                  $$->push_back(new VLP::Wire(*x,$1)); 
+                              delete $2;}
+|      v_type  range id_list {$$ = new VLP::ObjectList(); 
+                              for(VLP::NameList::const_iterator x=$3->begin(); x!=$3->end(); ++x) 
+                                  $$->push_back(new VLP::Wire(*x,$1,new VLP::Range(*$2))); 
+                              delete $3; delete $2;}
+;
+
+statement_list: statement_list statement  SEMICOLON {$$ = $1;                    $$->push_back($2);}
+|               statement_list error      SEMICOLON {$$ = $1;}
+|               statement  SEMICOLON                {$$ = new VLP::ObjectList(); $$->push_back($1);}
+;
+
+statement: stmt_assign  {$$ = $1;}
+|          stmt_inst    {$$ = $1;}
+;
+
+range:     OPEN_SQUARE INT COLON INT CLOSE_SQUARE  {$$ = new VLP::Range($2,$4);}
+;
+
+stmt_assign: KW_ASSIGN wire_expr ASSIGN wire_expr  {$$ = new VLP::Assign($2,$4);}
+;
+
+wire_expr: ID OPEN_SQUARE INT CLOSE_SQUARE     {$$ = new VLP::Expr($1,$3);}
+|          ID range                            {$$ = new VLP::Expr($1,$2);}
+|          ID                                  {$$ = new VLP::Expr($1,VLP::Expr::T_SIMPLE);}
+|          CONSTANT                            {$$ = new VLP::Expr($1,VLP::Expr::T_CONSTANT);}
+;
+
+list_wire_expr: list_wire_expr COMMA wire_expr {$$ = $1;                  $$->push_back($3);}
+|               wire_expr                      {$$ = new VLP::ExprList(); $$->push_back($1);}
+
+conc_expr: OPEN_BRACE list_wire_expr CLOSE_BRACE   {$$ = $2;}
+;
+
+intf_expr: DOT ID OPEN_PAREN wire_expr CLOSE_PAREN {$$ = new VLP::InstInterface($2,$4);}
+|          DOT ID OPEN_PAREN conc_expr CLOSE_PAREN {$$ = new VLP::InstInterface($2,$4);}
+|          DOT ID OPEN_PAREN           CLOSE_PAREN {$$ = new VLP::InstInterface($2,static_cast<VLP::Expr*>(0));}
+|          wire_expr                               {$$ = new VLP::InstInterface(0,$1);}
+|          conc_expr                               {$$ = new VLP::InstInterface(0,$1);}
+;
+
+intf_expr_list: intf_expr_list COMMA intf_expr {$$ = $1;                           $$->push_back($3);}
+|               intf_expr                      {$$ = new VLP::InstInterfaceList(); $$->push_back($1);}
+|                                              {$$ = new VLP::InstInterfaceList();}
+;
+
+modelid: ID      {$$ = $1;}
+|        KW_OR   {$$ = $1;}
+|        KW_NOR  {$$ = $1;}
+|        KW_AND  {$$ = $1;}
+|        KW_NAND {$$ = $1;}
+|        KW_XOR  {$$ = $1;}
+|        KW_XNOR {$$ = $1;}
+|        KW_NOT  {$$ = $1;}
+;
+
+stmt_inst: modelid ID OPEN_PAREN intf_expr_list CLOSE_PAREN {$$ = new VLP::Inst($1,$2,$4);}
+;
+
